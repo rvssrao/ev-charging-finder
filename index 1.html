@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EV Charging Station Finder</title>
+  <style>
+    :root{--green:#16a34a;--dark:#0f172a;--muted:#64748b;--bg:#f8fafc;--card:#fff}
+    *{box-sizing:border-box} body{margin:0;font-family:Arial,sans-serif;background:var(--bg);color:var(--dark)}
+    header{background:linear-gradient(135deg,#052e16,#16a34a);color:white;padding:30px 18px}
+    .wrap{max-width:1050px;margin:auto}.controls,.card{background:var(--card);border-radius:14px;padding:18px;box-shadow:0 4px 18px #00000010}
+    .controls{margin:-18px auto 24px;display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+    .location-box{flex:1;min-width:260px}.location-box input{width:100%}
+    label{font-size:12px;color:var(--muted);display:block;margin-bottom:5px}select,input,button{padding:11px;border:1px solid #cbd5e1;border-radius:9px}
+    button{background:var(--green);color:#fff;border:0;font-weight:700;cursor:pointer}button:hover{filter:brightness(.95)}button.secondary{background:#334155}
+    #status{margin:12px 0;color:var(--muted)}#results{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:14px;padding-bottom:30px}
+    .card h3{margin:0 0 8px}.distance{color:var(--green);font-weight:700}.meta{color:var(--muted);font-size:14px;line-height:1.55}.chips{margin:10px 0}
+    .chip{display:inline-block;background:#dcfce7;color:#166534;border-radius:999px;padding:4px 8px;font-size:12px;margin:2px}.map{display:inline-block;margin-top:10px;color:#15803d;font-weight:700;text-decoration:none}
+    .foot{padding:15px 0 30px;color:#64748b;font-size:12px}
+  </style>
+</head>
+<body>
+<header><div class="wrap"><h1>⚡ EV Charging Station Finder</h1><p>Search public EV charging stations by location name or your current location.</p></div></header>
+<main class="wrap">
+  <section class="controls">
+    <div class="location-box"><label>Location name</label><input id="location" type="text" placeholder="e.g. Siruseri, Chennai" /></div>
+    <button id="search">Search Location</button>
+    <button id="find" class="secondary">Use My Location</button>
+    <div><label>Radius</label><select id="radius"><option value="5">5 km</option><option value="10" selected>10 km</option><option value="25">25 km</option><option value="50">50 km</option><option value="100">100 km</option></select></div>
+    <div><label>Vehicle</label><select id="vehicle"><option value="">All</option><option value="car">Car</option><option value="two_three_wheeler">2/3 Wheeler</option></select></div>
+    <div><label>Current</label><select id="current"><option value="">AC + DC</option><option value="dc">DC</option><option value="ac">AC</option></select></div>
+    <div><label>Min power (kW)</label><input id="power" type="number" min="0" max="1000" placeholder="e.g. 50" /></div>
+  </section>
+  <div id="status">Enter a location name or use your current location to begin.</div>
+  <section id="results"></section>
+  <div class="foot">Location names are converted to coordinates through OpenStreetMap Nominatim. EV station attribution is displayed from the station API response.</div>
+</main>
+<script>
+const API='https://ev-charging-stations-api.vercel.app/v1/stations/near';
+const GEOCODER='https://nominatim.openstreetmap.org/search';
+const statusEl=document.getElementById('status'), results=document.getElementById('results');
+
+document.getElementById('search').onclick=searchByName;
+document.getElementById('location').addEventListener('keydown',e=>{if(e.key==='Enter') searchByName();});
+document.getElementById('find').onclick=()=>{
+  if(!navigator.geolocation){statusEl.textContent='Geolocation is not supported by this browser.';return;}
+  statusEl.textContent='Getting your location…'; results.innerHTML='';
+  navigator.geolocation.getCurrentPosition(
+    p=>loadStations(p.coords.latitude,p.coords.longitude,'your current location'),
+    err=>statusEl.textContent='Location error: '+err.message,
+    {enableHighAccuracy:true,timeout:12000}
+  );
+};
+
+async function searchByName(){
+  const name=document.getElementById('location').value.trim();
+  if(!name){statusEl.textContent='Enter a location, for example: Siruseri, Chennai.';return;}
+  statusEl.textContent=`Finding ${name}…`; results.innerHTML='';
+  try{
+    const params=new URLSearchParams({format:'jsonv2',limit:'1',q:name});
+    const r=await fetch(`${GEOCODER}?${params}`,{headers:{Accept:'application/json'}});
+    if(!r.ok) throw new Error(`Location search error ${r.status}`);
+    const places=await r.json();
+    if(!places.length) throw new Error('Location not found. Add the city, district, or state and try again.');
+    const place=places[0];
+    await loadStations(Number(place.lat),Number(place.lon),place.display_name);
+  }catch(e){statusEl.textContent='Could not find location: '+e.message;}
+}
+
+async function loadStations(lat,lng,label){
+  const q=new URLSearchParams({lat,lng,radius:document.getElementById('radius').value,limit:'100'});
+  const vehicle=document.getElementById('vehicle').value,current=document.getElementById('current').value,power=document.getElementById('power').value;
+  if(vehicle) q.set('vehicle',vehicle); if(current) q.set('current',current); if(power) q.set('min_power_kw',power);
+  statusEl.textContent=`Searching EV chargers near ${label}…`;
+  try{
+    const r=await fetch(`${API}?${q}`); const json=await r.json();
+    if(!r.ok||json.success===false) throw new Error(json.error?.message||json.message||`API error ${r.status}`);
+    const data=json.data||[];
+    statusEl.textContent=`Found ${json.meta?.total_found ?? data.length} matching station(s) near ${label}. Showing ${data.length}.`;
+    results.innerHTML=data.length?data.map(card).join(''):'<div class="card">No matching charging stations found. Try a larger radius or fewer filters.</div>';
+    if(json.meta?.attribution) document.querySelector('.foot').textContent=json.meta.attribution+' Location search powered by OpenStreetMap Nominatim.';
+  }catch(e){statusEl.textContent='Could not load stations: '+e.message;}
+}
+
+function esc(v=''){return String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function card(s){
+  const standards=(s.standards||[]).map(x=>`<span class="chip">${esc(x)}</span>`).join('');
+  const currents=(s.currents||[]).map(x=>`<span class="chip">${esc(x)}</span>`).join('');
+  const map=`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(s.latitude+','+s.longitude)}`;
+  return `<article class="card"><h3>${esc(s.operator||'EV Charging Station')}</h3><div class="distance">${esc(s.distance_km)} km away</div><div class="meta">${esc(s.address||'Address unavailable')}<br>${esc(s.city||'')}${s.state?', '+esc(s.state):''}</div><div class="chips">${standards}${currents}</div><div class="meta"><b>Max power:</b> ${esc(s.max_power_kw ?? 'N/A')} kW<br><b>Chargers:</b> ${esc(s.total_chargers ?? 'N/A')} · <b>Connectors:</b> ${esc(s.total_connectors ?? 'N/A')}<br><b>Operator type:</b> ${esc(s.ownership||'N/A')}</div><a class="map" href="${map}" target="_blank" rel="noopener">Directions →</a></article>`;
+}
+</script>
+</body>
+</html>
